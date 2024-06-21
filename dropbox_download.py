@@ -6,18 +6,53 @@ from dotenv import load_dotenv
 import re
 import threading
 import time
+import requests
+from dropbox.exceptions import AuthError, ApiError
+import json
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Retrieve the access token from the environment variable
-ACCESS_TOKEN = os.getenv('DROPBOX_ACCESS_TOKEN')
+# Retrieve the access token and refresh token from environment variables
+ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
+REFRESH_TOKEN = os.getenv('REFRESH_TOKEN')
+APP_KEY = os.getenv('APP_KEY')
+APP_SECRET = os.getenv('APP_SECRET')
 
-if not ACCESS_TOKEN:
-    raise ValueError("No Dropbox access token found. Please set the 'DROPBOX_ACCESS_TOKEN' environment variable.")
+if not ACCESS_TOKEN or not REFRESH_TOKEN or not APP_KEY or not APP_SECRET:
+    raise ValueError("Please set the 'ACCESS_TOKEN', 'REFRESH_TOKEN', 'APP_KEY', and 'APP_SECRET' environment variables.")
 
-# Initialize Dropbox client
-dbx = dropbox.Dropbox(ACCESS_TOKEN)
+def refresh_access_token():
+    """Refresh the Dropbox access token."""
+    token_url = "https://api.dropbox.com/oauth2/token"
+    data = {
+        'grant_type': 'refresh_token',
+        'refresh_token': REFRESH_TOKEN,
+    }
+    auth = (APP_KEY, APP_SECRET)
+    response = requests.post(token_url, data=data, auth=auth)
+    if response.status_code == 200:
+        tokens = response.json()
+        new_access_token = tokens['access_token']
+        os.environ['DROPBOX_ACCESS_TOKEN'] = new_access_token
+        return new_access_token
+    else:
+        raise Exception(f"Failed to refresh access token: {response.text}")
+
+def get_dbx_client():
+    """Get Dropbox client with a valid access token."""
+    global ACCESS_TOKEN
+    try:
+        dbx = dropbox.Dropbox(ACCESS_TOKEN)
+        # Try an API call to check if the token is valid
+        dbx.users_get_current_account()
+        return dbx
+    except dropbox.exceptions.AuthError as e:
+        if 'expired_access_token' in str(e):
+            ACCESS_TOKEN = refresh_access_token()
+            return dropbox.Dropbox(ACCESS_TOKEN)
+        else:
+            raise e
 
 def download_file(dbx, dropbox_path, local_path, original_display_path):
     """Download a single file from Dropbox."""
@@ -142,6 +177,7 @@ if __name__ == "__main__":
             local_save_path = select_folder()
 
             if local_save_path:
+                dbx = get_dbx_client()
                 download_files_preserving_structure(dbx, dropbox_folder_path, local_save_path, include_deleted)
                 print("Download complete.")
             else:
